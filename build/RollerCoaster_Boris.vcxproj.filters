@@ -1,0 +1,30 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="C:\Users\borko\OneDrive\Desktop\Faks\4 godina\RacunarskaGrafika-main\K1 Zadatak\RollerCoaster_Boris\Source\Main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\borko\OneDrive\Desktop\Faks\4 godina\RacunarskaGrafika-main\K1 Zadatak\RollerCoaster_Boris\Source\Util.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="C:\Users\borko\OneDrive\Desktop\Faks\4 godina\RacunarskaGrafika-main\K1 Zadatak\RollerCoaster_Boris\Header\Util.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\borko\OneDrive\Desktop\Faks\4 godina\RacunarskaGrafika-main\K1 Zadatak\RollerCoaster_Boris\Header\stb_image.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\borko\OneDrive\Desktop\Faks\4 godina\RacunarskaGrafika-main\K1 Zadatak\RollerCoaster_Boris\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{AD6FEAF9-5E17-3A96-A99C-6EEF1E84260D}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{9F1D9F30-866E-3A7E-9640-AFD0863A797C}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

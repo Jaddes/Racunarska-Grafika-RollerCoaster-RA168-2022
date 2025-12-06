@@ -1,0 +1,3 @@
+C:/Users/borko/OneDrive/Desktop/Faks/4 godina/RacunarskaGrafika-main/K1 Zadatak/RollerCoaster_Boris/build/CMakeFiles/RollerCoaster_Boris.dir
+C:/Users/borko/OneDrive/Desktop/Faks/4 godina/RacunarskaGrafika-main/K1 Zadatak/RollerCoaster_Boris/build/CMakeFiles/ALL_BUILD.dir
+C:/Users/borko/OneDrive/Desktop/Faks/4 godina/RacunarskaGrafika-main/K1 Zadatak/RollerCoaster_Boris/build/CMakeFiles/ZERO_CHECK.dir

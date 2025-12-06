@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\borko\OneDrive\Desktop\Faks\4 godina\RacunarskaGrafika-main\K1 Zadatak\RollerCoaster_Boris\build\CMakeFiles\16ce1e9ebccb4a26ed38f66d92ec3e3a\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{A103FC83-A3F2-3AF4-A94E-A0BCB8206793}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
