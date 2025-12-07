@@ -174,9 +174,9 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </ProjectReference>
-    <ProjectReference Include="C:\Users\borko\OneDrive\Desktop\Faks\4 godina\RacunarskaGrafika-main\K1 Zadatak\RollerCoaster_Boris\build\RollerCoaster_Boris.vcxproj">
-      <Project>{AF30D724-F0C1-3667-9A47-1E6F8BB6B992}</Project>
-      <Name>RollerCoaster_Boris</Name>
+    <ProjectReference Include="C:\Users\borko\OneDrive\Desktop\Faks\4 godina\RacunarskaGrafika-main\K1 Zadatak\RollerCoaster_Boris\build\ClawMachine_Boris.vcxproj">
+      <Project>{F5A5DFEB-95F2-3EA3-BB31-E4C950CD34A5}</Project>
+      <Name>ClawMachine_Boris</Name>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

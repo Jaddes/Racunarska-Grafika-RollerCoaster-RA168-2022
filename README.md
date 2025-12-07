@@ -1,6 +1,6 @@
-# Roller Coaster (OpenGL)
+﻿# Tema 8 – Kandza (OpenGL)
 
-Minimal 2D/3D roller coaster scene with smooth Catmull-Rom track, segmented rails, and a silhouette background. Built with GLFW + GLEW on OpenGL 3.3.
+Arcade claw machine built on the provided OpenGL 3.3 framework. Fullscreen, 75 FPS limited loop, textured cursor, glass box with two plush toys, active lamp, prize compartment, and state-driven claw logic.
 
 ## Requirements
 - CMake 3.20+
@@ -16,16 +16,17 @@ cmake --build build --config Debug
 
 ## Run
 ```powershell
-build/Debug/RollerCoaster_Boris.exe
+build/Debug/ClawMachine_Boris.exe
 ```
 
 ## Controls
-- `SPACE` – add passenger
-- `CLICK` – toggle belt / remove when returned
-- `ENTER` – start ride
-- `1-8` – make passenger sick during ride
-- `ESC` – exit program
+- Left Click token slot: insert coin / start
+- A / D: move claw horizontally
+- W: raise claw (manual up)
+- S: lower claw / drop toy
+- Left Click prize: collect won toy
+- ESC: exit
 
 ## Notes
-- Track and visuals are self-contained; no external assets are required.
-- If the window opens on a secondary monitor, ensure the monitor is primary or adjust the GLFW window creation to windowed mode in `Source/Main.cpp`.
+- All assets are procedurally generated at runtime; no external textures required.
+- The system cursor is hidden; the textured cursor is drawn in-scene.

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cctype>
 #include <iostream>
+#include <random>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -20,35 +21,84 @@ struct Vec2 {
     Vec2 operator+(const Vec2& o) const { return { x + o.x, y + o.y }; }
     Vec2 operator-(const Vec2& o) const { return { x - o.x, y - o.y }; }
     Vec2 operator*(float s) const { return { x * s, y * s }; }
+    Vec2& operator+=(const Vec2& o) { x += o.x; y += o.y; return *this; }
 };
 
 static float length(const Vec2& v) { return std::sqrt(v.x * v.x + v.y * v.y); }
-static Vec2 normalize(const Vec2& v) {
-    float len = length(v);
-    if (len < 1e-6f) return { 0.0f, 0.0f };
-    return { v.x / len, v.y / len };
+
+enum class GameState {
+    Idle,
+    ActiveNoToy,
+    ActiveCarrying,
+    ToyFalling,
+    PrizeWaiting
+};
+
+const char* gameStateName(GameState s) {
+    switch (s) {
+    case GameState::Idle: return "Idle";
+    case GameState::ActiveNoToy: return "ActiveNoToy";
+    case GameState::ActiveCarrying: return "ActiveCarrying";
+    case GameState::ToyFalling: return "ToyFalling";
+    case GameState::PrizeWaiting: return "PrizeWaiting";
+    default: return "Unknown";
+    }
 }
-static Vec2 lerp(const Vec2& a, const Vec2& b, float t) { return a + (b - a) * t; }
 
-struct Passenger {
-    bool occupied = false;
-    bool strapped = false;
-    bool sick = false;
+enum class LampMode {
+    Off,
+    Blue,
+    Blink
 };
 
-enum class RideState { Boarding, Riding, StoppedForSick, Returning };
-
-struct Track {
-    std::vector<Vec2> samples;
-    std::vector<float> cumulative;
-    float totalLength = 1.0f;
+struct Lamp {
+    LampMode mode = LampMode::Off;
+    float timer = 0.0f;
+    bool blinkToggle = false;
+    float interval = 0.5f;
 };
 
-struct Car {
-    Passenger seats[8]{};
-    float param = 0.0f;  // 0..1 along track
-    float speed = 0.0f;
-    bool removalMode = false;
+struct Claw {
+    Vec2 anchor{ 0.0f, 0.70f };  // Rope start (just above glass)
+    float ropeLength = 0.16f;
+    float minLength = 0.16f;
+    float maxLength = 1.18f;
+    float moveSpeed = 0.65f;
+    float lowerSpeed = 0.80f;
+    float raiseSpeed = 1.00f;
+    float width = 0.12f;
+    float height = 0.10f;
+    bool open = false;
+    bool movingDown = false;
+    bool movingUp = false;
+};
+
+struct Toy {
+    Vec2 pos{ 0.0f, 0.0f };
+    Vec2 size{ 0.11f, 0.11f };
+    Vec2 velocity{ 0.0f, 0.0f };
+    unsigned int texture = 0;
+    bool active = true;
+    bool grabbed = false;
+    bool falling = false;
+    bool inPrize = false;
+};
+
+struct Hole {
+    Vec2 center{ 0.48f, -0.28f };
+    float radius = 0.085f;
+};
+
+struct PrizeCompartment {
+    Vec2 pos{ 0.48f, -0.54f };
+    Vec2 size{ 0.26f, 0.16f };
+    bool hasToy = false;
+    int toyIndex = -1;
+};
+
+struct TokenSlot {
+    Vec2 pos{ -0.48f, -0.58f };
+    Vec2 size{ 0.18f, 0.08f };
 };
 
 // Globals
@@ -59,41 +109,45 @@ unsigned int colorShader = 0;
 unsigned int textureShader = 0;
 unsigned int quadVAO = 0;
 unsigned int quadVBO = 0;
-unsigned int trackVAO = 0;
-unsigned int trackVBO = 0;
-unsigned int passengerTex = 0;
-unsigned int beltTex = 0;
-unsigned int seatTex = 0;
+
+unsigned int toyTextureA = 0;
+unsigned int toyTextureB = 0;
+unsigned int toyTextureC = 0;
+unsigned int holeTexture = 0;
+unsigned int cursorTokenTex = 0;
+unsigned int cursorLeverTex = 0;
 unsigned int labelTex = 0;
-unsigned int sunTex = 0;
-unsigned int cloudTex = 0;
-GLFWcursor* railCursor = nullptr;
 
-Track track;
-Car car;
-RideState rideState = RideState::Boarding;
-
-Vec2 carPos{ -0.8f, -0.9f };
-Vec2 carDir{ 1.0f, 0.0f };
-Vec2 railPos{ -0.8f, -0.9f };
-Vec2 carTangent{ 1.0f, 0.0f };
-Vec2 carNormal{ 0.0f, 1.0f };
-float carAngle = 0.0f;
-
-const float targetCruiseSpeed = 0.75f;
-const float baseAcceleration = 0.90f;
-const float slopeAcceleration = 1.30f;
-const float stopDeceleration = 1.50f;
-const float returnSpeed = 0.20f;
-float sickStopTimer = 0.0f;
-
-std::array<Vec2, 8> seatOffsets = {
-    Vec2{ 0.09f, -0.04f }, Vec2{ 0.09f, 0.04f },
-    Vec2{ 0.03f, -0.04f }, Vec2{ 0.03f, 0.04f },
-    Vec2{ -0.03f, -0.04f }, Vec2{ -0.03f, 0.04f },
-    Vec2{ -0.09f, -0.04f }, Vec2{ -0.09f, 0.04f }
+GameState gameState = GameState::Idle;
+Lamp lamp;
+Claw claw;
+Hole hole;
+PrizeCompartment prize;
+TokenSlot tokenSlot;
+std::array<Toy, 4> toys;
+std::array<Vec2, 6> spawnPositions = {
+    Vec2{ -0.58f, -0.44f }, Vec2{ -0.32f, -0.44f }, Vec2{ -0.06f, -0.44f },
+    Vec2{ 0.16f, -0.44f }, Vec2{ 0.36f, -0.44f }, Vec2{ 0.56f, -0.44f }
 };
-std::array<int, 8> seatOrder = { 0, 1, 2, 3, 4, 5, 6, 7 };
+int nextSpawnSlot = 0;
+int grabbedToyIndex = -1;
+int fallingToyIndex = -1;
+bool sWasDown = false;
+Vec2 mouseGL{ 0.0f, 0.0f };
+std::mt19937 rng(1337);
+bool pendingPrizeClick = false;
+float prizePulseTime = 0.0f;
+int gClickCounter = 0;
+
+// Bounds for the glass box
+const Vec2 boxCenter{ 0.0f, 0.12f };
+const Vec2 boxSize{ 1.26f, 1.06f };
+const float boxLeft = boxCenter.x - boxSize.x * 0.5f;
+const float boxRight = boxCenter.x + boxSize.x * 0.5f;
+const float boxTop = boxCenter.y + boxSize.y * 0.5f;
+const float boxBottom = boxCenter.y - boxSize.y * 0.5f;
+const float floorY = boxBottom + 0.035f;
+const float anchorStartY = boxTop + 0.08f;
 
 // Forward decls
 bool initGLFW();
@@ -101,38 +155,41 @@ bool initWindow();
 bool initGLEW();
 void initOpenGLState();
 void createVAOs();
-void createTrackGeometry();
 void mainLoop();
 void update(float dt);
 void render();
-void renderEnvironment();
-void renderSkyGradient();
-void renderSkyline();
-void renderGroundSilhouette();
-void renderClouds();
-void renderTrackSilhouette();
 void windowToOpenGL(double mx, double my, float& glx, float& gly);
 void mouseClickCallback(GLFWwindow* window, int button, int action, int mods);
 void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
-Track buildTrack();
-Vec2 catmullRom(const Vec2& p0, const Vec2& p1, const Vec2& p2, const Vec2& p3, float t);
-void evaluateTrack(float t, Vec2& outPos, Vec2& outTangent);
 void drawQuadColor(const Vec2& pos, const Vec2& size, float rot, const std::array<float, 4>& color);
 void drawQuadTexture(unsigned int tex, const Vec2& pos, const Vec2& size, float rot, const std::array<float, 4>& tint);
+
+// Textures + helpers
 std::vector<unsigned char> makeCircleTexture(int size, const std::array<unsigned char, 4>& fill);
-std::vector<unsigned char> makeSeatbeltTexture(int size);
-std::vector<unsigned char> makeSeatTexture(int size);
-std::vector<unsigned char> makeRailCursorPixels(int size);
+std::vector<unsigned char> makeRingTexture(int size, const std::array<unsigned char, 4>& inner, const std::array<unsigned char, 4>& outer);
+std::vector<unsigned char> makeToyTextureDots(int size);
+std::vector<unsigned char> makeToyTextureStripes(int size);
+std::vector<unsigned char> makeToyTextureChecks(int size);
+std::vector<unsigned char> makeCoinTexture(int size);
+std::vector<unsigned char> makeLeverTexture(int size);
+std::unordered_map<char, std::array<uint8_t, 7>> fontGlyphs();
 std::vector<unsigned char> makeLabelTexture(int width, int height, const std::string& text);
-void addPassenger();
-void toggleSeatStrap(int idx);
-void removePassenger(int idx);
-void tryStartRide();
-void triggerSick(int idx);
-bool allStrapped() ;
-int nextFreeSeat();
-void resetAfterReturn();
-Vec2 seatWorldPosition(int idx);
+
+// Gameplay helpers
+void resetMachine();
+void spawnToys();
+void startGame();
+void startLowering();
+void attachToy(int idx);
+void releaseToy();
+void collectPrize();
+void updateLamp(float dt);
+void updateClawMotion(float dt);
+void updateFallingToy(float dt);
+Vec2 clawPosition();
+Vec2 clawGrabPoint();
+bool pointInRect(const Vec2& p, const Vec2& center, const Vec2& size);
+void configureLayout();
 
 bool initGLFW()
 {
@@ -150,10 +207,11 @@ bool initWindow()
     screenWidth = mode->width;
     screenHeight = mode->height;
 
-    window = glfwCreateWindow(screenWidth, screenHeight, "RollerCoaster - Boris Lahos RA 168/2022", monitor, NULL);
+    window = glfwCreateWindow(screenWidth, screenHeight, "CLAW MACHINE - Boris Lahos RA 168/2022", monitor, NULL);
     if (!window) return false;
     glfwMakeContextCurrent(window);
     glfwSwapInterval(0);
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
     return true;
 }
 
@@ -176,96 +234,6 @@ void windowToOpenGL(double mx, double my, float& glx, float& gly)
     gly = float(1.0 - (my / screenHeight) * 2.0);
 }
 
-Track buildTrack()
-{
-    const float pi = 3.14159265f;
-    auto smoothStep = [&](float t) {
-        return 0.5f - 0.5f * std::cos(t * pi);
-    };
-    auto addSmoothSegment = [&](Track& tr, const Vec2& a, const Vec2& b, int steps) {
-        for (int i = 1; i <= steps; ++i) {
-            float u = float(i) / float(steps);
-            float w = smoothStep(u);
-            Vec2 p = lerp(a, b, w);
-            tr.samples.push_back(p);
-        }
-    };
-    auto addLoop = [&](Track& tr, const Vec2& center, float radius, float drift, float startAngle, float endAngle, int steps) {
-        for (int i = 1; i <= steps; ++i) {
-            float u = float(i) / float(steps);
-            float theta = startAngle + (endAngle - startAngle) * u;
-            float x = center.x + radius * std::cos(theta) + drift * theta;
-            float y = center.y + radius * std::sin(theta);
-            tr.samples.push_back({ x, y });
-        }
-    };
-
-    Track t;
-    Vec2 start = { -0.95f, -0.86f };
-    t.samples.push_back(start);
-
-    // Visible start line near ground.
-    addSmoothSegment(t, start, { -0.82f, -0.86f }, 35);
-
-    addSmoothSegment(t, { -0.82f, -0.86f }, { -0.70f, 0.54f }, 95);   // Tall left hill
-    addSmoothSegment(t, { -0.70f, 0.54f }, { -0.58f, -0.72f }, 90);   // Drop back to ground
-    addSmoothSegment(t, { -0.58f, -0.72f }, { -0.46f, -0.26f }, 80);  // Small rise before loop
-    addSmoothSegment(t, { -0.46f, -0.26f }, { -0.30f, -0.44f }, 65);
-
-    // Vertical loop with a slight horizontal drift so entry and exit are offset.
-    const float loopRadius = 0.22f;
-    const float loopDrift = 0.06f;
-    const float loopStart = -pi * 0.5f;
-    const float loopEnd = loopStart + 2.0f * pi;
-    Vec2 loopCenter = { -0.12f, -0.25f };
-    Vec2 loopEntry = { loopCenter.x + loopRadius * std::cos(loopStart) + loopDrift * loopStart,
-                       loopCenter.y + loopRadius * std::sin(loopStart) };
-    addSmoothSegment(t, { -0.31f, -0.44f }, loopEntry, 45);
-    addLoop(t, loopCenter, loopRadius, loopDrift, loopStart, loopEnd, 220);
-    Vec2 loopExit = { loopCenter.x + loopRadius * std::cos(loopEnd) + loopDrift * loopEnd,
-                      loopCenter.y + loopRadius * std::sin(loopEnd) };
-
-    addSmoothSegment(t, loopExit, { 0.32f, 0.32f }, 100); // Climb after loop
-    addSmoothSegment(t, { 0.32f, 0.32f }, { 0.48f, -0.60f }, 95); // Big valley
-    addSmoothSegment(t, { 0.48f, -0.60f }, { 0.70f, -0.05f }, 80); // Final rolling hill
-    addSmoothSegment(t, { 0.70f, -0.05f }, { 0.96f, -0.86f }, 105); // Gentle drop to exit
-
-    // Lift and nudge the entire track so the cart and all seats are fully visible at start.
-    for (auto& p : t.samples) {
-        p.y += 0.12f;
-        p.x += 0.12f;
-    }
-
-    t.cumulative.resize(t.samples.size(), 0.0f);
-    for (size_t i = 1; i < t.samples.size(); ++i) {
-        t.cumulative[i] = t.cumulative[i - 1] + length(t.samples[i] - t.samples[i - 1]);
-    }
-    t.totalLength = std::max(0.001f, t.cumulative.empty() ? 0.0f : t.cumulative.back());
-    return t;
-}
-
-Vec2 catmullRom(const Vec2& p0, const Vec2& p1, const Vec2& p2, const Vec2& p3, float t)
-{
-    float t2 = t * t;
-    float t3 = t2 * t;
-    float x = 0.5f * ((2 * p1.x) + (-p0.x + p2.x) * t + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3);
-    float y = 0.5f * ((2 * p1.y) + (-p0.y + p2.y) * t + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3);
-    return { x, y };
-}
-
-void evaluateTrack(float t, Vec2& outPos, Vec2& outTangent)
-{
-    t = std::clamp(t, 0.0f, 1.0f);
-    float target = t * track.totalLength;
-    size_t idx = 0;
-    while (idx + 1 < track.cumulative.size() && track.cumulative[idx + 1] < target) idx++;
-    size_t next = std::min(idx + 1, track.samples.size() - 1);
-    float segLen = track.cumulative[next] - track.cumulative[idx];
-    float localT = segLen > 0.0f ? (target - track.cumulative[idx]) / segLen : 0.0f;
-    outPos = lerp(track.samples[idx], track.samples[next], localT);
-    outTangent = normalize(track.samples[next] - track.samples[idx]);
-}
-
 void createVAOs()
 {
     float quadVertices[] = {
@@ -284,35 +252,20 @@ void createVAOs()
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
     glEnableVertexAttribArray(1);
     glBindVertexArray(0);
-
-    glGenVertexArrays(1, &trackVAO);
-    glGenBuffers(1, &trackVBO);
-    glBindVertexArray(trackVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, trackVBO);
-    glBufferData(GL_ARRAY_BUFFER, track.samples.size() * sizeof(Vec2), track.samples.data(), GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(Vec2), (void*)0);
-    glEnableVertexAttribArray(0);
-    glBindVertexArray(0);
 }
 
-void createTrackGeometry()
-{
-    glBindBuffer(GL_ARRAY_BUFFER, trackVBO);
-    glBufferData(GL_ARRAY_BUFFER, track.samples.size() * sizeof(Vec2), track.samples.data(), GL_STATIC_DRAW);
-}
-
+// ---------------------- Texture generation helpers ---------------------- //
 std::vector<unsigned char> makeCircleTexture(int size, const std::array<unsigned char, 4>& fill)
 {
     std::vector<unsigned char> data(size * size * 4, 0);
     Vec2 center = { size * 0.5f, size * 0.5f };
-    float radius = size * 0.45f;
-    float radius2 = radius * radius;
+    float radius = size * 0.48f;
+    float r2 = radius * radius;
     for (int y = 0; y < size; ++y) {
         for (int x = 0; x < size; ++x) {
             float dx = x - center.x;
             float dy = y - center.y;
-            float dist2 = dx * dx + dy * dy;
-            if (dist2 <= radius2) {
+            if (dx * dx + dy * dy <= r2) {
                 int idx = (y * size + x) * 4;
                 data[idx + 0] = fill[0];
                 data[idx + 1] = fill[1];
@@ -324,41 +277,163 @@ std::vector<unsigned char> makeCircleTexture(int size, const std::array<unsigned
     return data;
 }
 
-std::vector<unsigned char> makeSeatbeltTexture(int size)
+std::vector<unsigned char> makeRingTexture(int size, const std::array<unsigned char, 4>& inner, const std::array<unsigned char, 4>& outer)
 {
     std::vector<unsigned char> data(size * size * 4, 0);
+    Vec2 c = { size * 0.5f, size * 0.5f };
+    float outerR = size * 0.48f;
+    float innerR = size * 0.26f;
+    float o2 = outerR * outerR;
+    float i2 = innerR * innerR;
     for (int y = 0; y < size; ++y) {
         for (int x = 0; x < size; ++x) {
-            if (y > x - 4 && y < x + 4) {
-                int idx = (y * size + x) * 4;
-                data[idx + 0] = 40;
-                data[idx + 1] = 40;
-                data[idx + 2] = 40;
-                data[idx + 3] = 220;
+            float dx = x - c.x;
+            float dy = y - c.y;
+            float d2 = dx * dx + dy * dy;
+            int idx = (y * size + x) * 4;
+            if (d2 <= i2) {
+                data[idx + 0] = inner[0];
+                data[idx + 1] = inner[1];
+                data[idx + 2] = inner[2];
+                data[idx + 3] = inner[3];
+            }
+            else if (d2 <= o2) {
+                data[idx + 0] = outer[0];
+                data[idx + 1] = outer[1];
+                data[idx + 2] = outer[2];
+                data[idx + 3] = outer[3];
             }
         }
     }
     return data;
 }
 
-std::vector<unsigned char> makeSeatTexture(int size)
+std::vector<unsigned char> makeToyTextureDots(int size)
 {
     std::vector<unsigned char> data(size * size * 4, 0);
     for (int y = 0; y < size; ++y) {
         for (int x = 0; x < size; ++x) {
             int idx = (y * size + x) * 4;
-            bool border = x < 2 || x > size - 3 || y < 2 || y > size - 3;
-            if (border) {
-                data[idx + 0] = 110;
-                data[idx + 1] = 20;
-                data[idx + 2] = 25;
-                data[idx + 3] = 230;
-            } else {
-                data[idx + 0] = 150;
-                data[idx + 1] = 35;
-                data[idx + 2] = 45;
-                data[idx + 3] = 220;
+            data[idx + 0] = 190;
+            data[idx + 1] = 110;
+            data[idx + 2] = 200;
+            data[idx + 3] = 255;
+        }
+    }
+    for (int by = 0; by < size; by += 8) {
+        for (int bx = 0; bx < size; bx += 8) {
+            Vec2 center = { float(bx + 4), float(by + 4) };
+            for (int y = by; y < by + 8 && y < size; ++y) {
+                for (int x = bx; x < bx + 8 && x < size; ++x) {
+                    float dx = x - center.x;
+                    float dy = y - center.y;
+                    if (dx * dx + dy * dy < 10.5f) {
+                        int idx = (y * size + x) * 4;
+                        data[idx + 0] = 250;
+                        data[idx + 1] = 220;
+                        data[idx + 2] = 120;
+                        data[idx + 3] = 255;
+                    }
+                }
             }
+        }
+    }
+    return data;
+}
+
+std::vector<unsigned char> makeToyTextureStripes(int size)
+{
+    std::vector<unsigned char> data(size * size * 4, 0);
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            int idx = (y * size + x) * 4;
+            bool bright = ((x / 6) % 2) == 0;
+            data[idx + 0] = bright ? 90 : 60;
+            data[idx + 1] = bright ? 170 : 120;
+            data[idx + 2] = bright ? 230 : 180;
+            data[idx + 3] = 255;
+        }
+    }
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            if (((y / 6) % 2) == 0) {
+                int idx = (y * size + x) * 4;
+                data[idx + 0] = std::min<int>(255, data[idx + 0] + 30);
+                data[idx + 1] = std::min<int>(255, data[idx + 1] + 30);
+                data[idx + 2] = std::min<int>(255, data[idx + 2] + 10);
+            }
+        }
+    }
+    return data;
+}
+
+std::vector<unsigned char> makeToyTextureChecks(int size)
+{
+    std::vector<unsigned char> data(size * size * 4, 0);
+    std::array<unsigned char, 4> c1 = { 70, 170, 220, 255 };
+    std::array<unsigned char, 4> c2 = { 35, 120, 180, 255 };
+    int block = 6;
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            bool alt = ((x / block) + (y / block)) % 2 == 0;
+            const auto& c = alt ? c1 : c2;
+            int idx = (y * size + x) * 4;
+            data[idx + 0] = c[0];
+            data[idx + 1] = c[1];
+            data[idx + 2] = c[2];
+            data[idx + 3] = c[3];
+        }
+    }
+    return data;
+}
+
+std::vector<unsigned char> makeCoinTexture(int size)
+{
+    std::vector<unsigned char> data(size * size * 4, 0);
+    Vec2 c{ size * 0.5f, size * 0.5f };
+    float r = size * 0.45f;
+    float r2 = r * r;
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            float dx = x - c.x;
+            float dy = y - c.y;
+            float d2 = dx * dx + dy * dy;
+            if (d2 <= r2) {
+                float shade = 0.75f + 0.25f * (dy / r);
+                shade = std::clamp(shade, 0.6f, 1.0f);
+                int idx = (y * size + x) * 4;
+                data[idx + 0] = static_cast<unsigned char>(230 * shade);
+                data[idx + 1] = static_cast<unsigned char>(190 * shade);
+                data[idx + 2] = static_cast<unsigned char>(70 * shade);
+                data[idx + 3] = 255;
+            }
+        }
+    }
+    return data;
+}
+
+std::vector<unsigned char> makeLeverTexture(int size)
+{
+    std::vector<unsigned char> data(size * size * 4, 0);
+    auto setPix = [&](int x, int y, const std::array<unsigned char, 4>& c) {
+        if (x < 0 || x >= size || y < 0 || y >= size) return;
+        int idx = (y * size + x) * 4;
+        data[idx + 0] = c[0];
+        data[idx + 1] = c[1];
+        data[idx + 2] = c[2];
+        data[idx + 3] = c[3];
+    };
+    std::array<unsigned char, 4> body = { 200, 200, 210, 255 };
+    std::array<unsigned char, 4> grip = { 90, 120, 230, 255 };
+
+    for (int y = 4; y < size - 4; ++y) {
+        for (int x = 6; x < 14; ++x) {
+            setPix(x, y, body);
+        }
+    }
+    for (int y = 0; y < 16; ++y) {
+        for (int x = 0; x < 20; ++x) {
+            if (x + y < 16) setPix(x, y, grip);
         }
     }
     return data;
@@ -413,14 +488,13 @@ std::unordered_map<char, std::array<uint8_t, 7>> fontGlyphs()
 std::vector<unsigned char> makeLabelTexture(int width, int height, const std::string& text)
 {
     std::vector<unsigned char> data(width * height * 4, 0);
-    // semi-transparent background
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
             int idx = (y * width + x) * 4;
             data[idx + 0] = 20;
             data[idx + 1] = 24;
             data[idx + 2] = 32;
-            data[idx + 3] = 200;
+            data[idx + 3] = 180;
         }
     }
 
@@ -429,7 +503,7 @@ std::vector<unsigned char> makeLabelTexture(int width, int height, const std::st
     int lineHeight = 7 * scale + 6;
     int marginX = 16;
     int cursorX = marginX;
-    int cursorY = 32;
+    int cursorY = 28;
     for (size_t i = 0; i < text.size(); ++i) {
         char c = static_cast<char>(std::toupper(static_cast<unsigned char>(text[i])));
         if (c == '\n') {
@@ -463,196 +537,332 @@ std::vector<unsigned char> makeLabelTexture(int width, int height, const std::st
     return data;
 }
 
-std::vector<unsigned char> makeRailCursorPixels(int size)
+// ---------------------- Gameplay helpers ---------------------- //
+void resetMachine()
 {
-    std::vector<unsigned char> data(size * size * 4, 0);
-    // Simple arrow pointing up-left. Transparent background, light body.
-    auto setPix = [&](int x, int y, std::array<unsigned char, 4> rgba) {
-        if (x < 0 || x >= size || y < 0 || y >= size) return;
-        int idx = (y * size + x) * 4;
-        data[idx + 0] = rgba[0];
-        data[idx + 1] = rgba[1];
-        data[idx + 2] = rgba[2];
-        data[idx + 3] = rgba[3];
-    };
+    configureLayout();
 
-    std::array<unsigned char, 4> body = { 235, 235, 235, 255 };
-    // Arrow head (triangle)
-    for (int y = 0; y < size; ++y) {
-        for (int x = 0; x <= y; ++x) {
-            if (x <= 12 && y <= 20) setPix(x, y, body);
+    gameState = GameState::Idle;
+    lamp.mode = LampMode::Off;
+    lamp.timer = 0.0f;
+    lamp.blinkToggle = false;
+
+    claw.anchor = { 0.0f, anchorStartY };
+    claw.ropeLength = claw.minLength;
+    claw.open = false;
+    claw.movingDown = false;
+    claw.movingUp = false;
+
+    prize.hasToy = false;
+    prize.toyIndex = -1;
+    grabbedToyIndex = -1;
+    fallingToyIndex = -1;
+    sWasDown = false;
+}
+
+void spawnToys()
+{
+    std::uniform_int_distribution<int> slotDist(0, static_cast<int>(spawnPositions.size()) - 1);
+    int startSlot = slotDist(rng);
+    std::array<unsigned int, 3> toyTextures = { toyTextureA, toyTextureB, toyTextureC };
+    for (size_t i = 0; i < toys.size(); ++i) {
+        Vec2 spawn = spawnPositions[(startSlot + static_cast<int>(i)) % spawnPositions.size()];
+        toys[i].size = { 0.11f, 0.11f };
+        spawn.y = floorY + toys[i].size.y * 0.5f;
+        toys[i].pos = spawn;
+        toys[i].velocity = { 0.0f, 0.0f };
+        toys[i].grabbed = false;
+        toys[i].falling = false;
+        toys[i].inPrize = false;
+        toys[i].active = true;
+        toys[i].texture = toyTextures[i % toyTextures.size()];
+    }
+    nextSpawnSlot = (startSlot + static_cast<int>(toys.size())) % spawnPositions.size();
+}
+
+void startGame()
+{
+    if (gameState != GameState::Idle) return;
+    lamp.mode = LampMode::Blue;
+    claw.open = true;
+    gameState = GameState::ActiveNoToy;
+}
+
+void startLowering()
+{
+    if (claw.movingDown || claw.movingUp) return;
+    claw.movingDown = true;
+}
+
+void attachToy(int idx)
+{
+    grabbedToyIndex = idx;
+    toys[idx].grabbed = true;
+    toys[idx].falling = false;
+    toys[idx].velocity = { 0.0f, 0.0f };
+    claw.open = false;
+    gameState = GameState::ActiveCarrying;
+    claw.movingDown = false;
+    claw.movingUp = true;
+}
+
+void releaseToy()
+{
+    if (grabbedToyIndex < 0) return;
+    Toy& t = toys[grabbedToyIndex];
+    t.grabbed = false;
+    t.falling = true;
+    t.velocity = { 0.0f, 0.0f };
+    t.pos = clawGrabPoint();
+    fallingToyIndex = grabbedToyIndex;
+    grabbedToyIndex = -1;
+    claw.open = true;
+    gameState = GameState::ToyFalling;
+}
+
+void collectPrize()
+{
+    std::cout << "[COLLECT] collectPrize() called. prize.hasToy=" << (prize.hasToy ? 1 : 0)
+        << " toyIndex=" << prize.toyIndex
+        << " stateBefore=" << gameStateName(gameState) << std::endl;
+
+    if (!prize.hasToy || prize.toyIndex < 0) return;
+    int idx = prize.toyIndex;
+    toys[idx].inPrize = false;
+    toys[idx].falling = false;
+    toys[idx].grabbed = false;
+    toys[idx].active = true;
+    // Respawn toy to keep the machine playable.
+    Vec2 respawn = spawnPositions[nextSpawnSlot];
+    respawn.y = floorY + toys[idx].size.y * 0.5f;
+    toys[idx].pos = respawn;
+    nextSpawnSlot = (nextSpawnSlot + 1) % spawnPositions.size();
+
+    prize.hasToy = false;
+    prize.toyIndex = -1;
+    pendingPrizeClick = false;
+    resetMachine();
+    lamp.mode = LampMode::Off;
+    claw.open = false;
+
+    std::cout << "[COLLECT] DONE: prize cleared, stateAfter=" << gameStateName(gameState)
+        << " prize.hasToy=" << (prize.hasToy ? 1 : 0) << std::endl;
+}
+
+void updateLamp(float dt)
+{
+    if (lamp.mode == LampMode::Blink) {
+        lamp.timer += dt;
+        if (lamp.timer >= lamp.interval) {
+            lamp.timer = 0.0f;
+            lamp.blinkToggle = !lamp.blinkToggle;
         }
     }
-    // Stem
-    for (int y = 8; y < 24; ++y) {
-        for (int x = 8; x < 11; ++x) {
-            setPix(x, y, body);
+}
+
+Vec2 clawPosition()
+{
+    return { claw.anchor.x, claw.anchor.y - claw.ropeLength };
+}
+
+Vec2 clawGrabPoint()
+{
+    Vec2 pos = clawPosition();
+    return { pos.x, pos.y - claw.height * 0.35f };
+}
+
+bool pointInRect(const Vec2& p, const Vec2& center, const Vec2& size)
+{
+    return std::abs(p.x - center.x) <= size.x * 0.5f && std::abs(p.y - center.y) <= size.y * 0.5f;
+}
+
+bool pointInPrizeArea(const Vec2& p)
+{
+    // Enlarge clickable area to match visual glow and reduce miss clicks.
+    return pointInRect(p, prize.pos, prize.size * 1.40f);
+}
+
+void configureLayout()
+{
+    hole.center = { boxRight - 0.20f, floorY + 0.11f };
+    hole.radius = 0.085f;
+
+    prize.pos = { boxRight - 0.10f, boxBottom - 0.16f };
+    prize.size = { 0.32f, 0.16f };
+
+    tokenSlot.pos = { boxLeft + 0.30f, boxBottom - 0.14f };
+    tokenSlot.size = { 0.22f, 0.08f };
+
+    claw.anchor = { 0.0f, anchorStartY };
+    claw.ropeLength = claw.minLength;
+}
+
+void updateClawMotion(float dt)
+{
+    // Horizontal movement
+    if (gameState == GameState::ActiveNoToy || gameState == GameState::ActiveCarrying || gameState == GameState::ToyFalling) {
+        float moveDir = 0.0f;
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) moveDir -= 1.0f;
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) moveDir += 1.0f;
+        claw.anchor.x += moveDir * claw.moveSpeed * dt;
+        claw.anchor.x = std::clamp(claw.anchor.x, boxLeft + 0.10f, boxRight - 0.10f);
+    }
+
+    if (claw.movingDown) {
+        claw.ropeLength += claw.lowerSpeed * dt;
+        claw.ropeLength = std::min(claw.ropeLength, claw.maxLength);
+        Vec2 cPos = clawPosition();
+        if (cPos.y - claw.height * 0.5f <= floorY) {
+            claw.movingDown = false;
+            claw.movingUp = true;
+        }
+        for (int i = 0; i < static_cast<int>(toys.size()); ++i) {
+            Toy& t = toys[i];
+            if (!t.active || t.falling || t.inPrize) continue;
+            float dx = std::abs(cPos.x - t.pos.x);
+            float dy = std::abs(cPos.y - t.pos.y);
+            if (dx <= (claw.width * 0.5f + t.size.x * 0.35f) && dy <= (claw.height * 0.5f + t.size.y * 0.35f)) {
+                attachToy(i);
+                break;
+            }
         }
     }
-    return data;
-}
-
-void addPassenger()
-{
-    if (rideState != RideState::Boarding || car.removalMode) return;
-    int idx = nextFreeSeat();
-    if (idx < 0) return;
-    car.seats[idx].occupied = true;
-    car.seats[idx].strapped = false;
-    car.seats[idx].sick = false;
-}
-
-void toggleSeatStrap(int idx)
-{
-    if (rideState != RideState::Boarding || car.removalMode) return;
-    if (idx < 0 || idx >= 8) return;
-    if (!car.seats[idx].occupied) return;
-    car.seats[idx].strapped = !car.seats[idx].strapped;
-}
-
-void removePassenger(int idx)
-{
-    if (!car.removalMode || rideState != RideState::Boarding) return;
-    if (idx < 0 || idx >= 8) return;
-    car.seats[idx] = Passenger{};
-    bool any = false;
-    for (const auto& s : car.seats) any = any || s.occupied;
-    if (!any) car.removalMode = false;
-}
-
-bool allStrapped()
-{
-    bool any = false;
-    for (const auto& s : car.seats) {
-        if (s.occupied) {
-            any = true;
-            if (!s.strapped) return false;
+    if (claw.movingUp) {
+        claw.ropeLength -= claw.raiseSpeed * dt;
+        if (claw.ropeLength <= claw.minLength) {
+            claw.ropeLength = claw.minLength;
+            claw.movingUp = false;
         }
     }
-    return any;
 }
 
-int nextFreeSeat()
+void updateFallingToy(float dt)
 {
-    for (int idx : seatOrder) {
-        if (!car.seats[idx].occupied) return idx;
+    if (fallingToyIndex < 0) return;
+    Toy& t = toys[fallingToyIndex];
+    if (!t.falling) {
+        fallingToyIndex = -1;
+        return;
     }
-    return -1;
-}
+    const float gravity = -2.6f;
+    t.velocity.y += gravity * dt;
+    t.pos.y += t.velocity.y * dt;
 
-void tryStartRide()
-{
-    if (rideState != RideState::Boarding) return;
-    if (!allStrapped()) return;
-    rideState = RideState::Riding;
-    sickStopTimer = 0.0f;
-    car.speed = 0.0f;
-}
+    // Hole detection
+    float holeDist = length({ t.pos.x - hole.center.x, t.pos.y - hole.center.y });
+    if (holeDist < hole.radius * 0.75f && t.pos.y <= hole.center.y + 0.02f) {
+        t.falling = false;
+        t.inPrize = true;
+        prize.hasToy = true;
+        prize.toyIndex = fallingToyIndex;
+        t.pos = prize.pos;
+        lamp.mode = LampMode::Blink;
+        lamp.timer = 0.0f;
+        gameState = GameState::PrizeWaiting;
+        claw.open = false;
+        claw.movingDown = false;
+        claw.movingUp = true;
 
-void triggerSick(int idx)
-{
-    if (rideState != RideState::Riding) return;
-    if (idx < 0 || idx >= 8) return;
-    if (!car.seats[idx].occupied) return;
-    car.seats[idx].sick = true;
-    rideState = RideState::StoppedForSick;
-    sickStopTimer = 0.0f;
-}
+        std::cout << "[HOLE] Toy entered hole -> prize.hasToy=1, state=" << gameStateName(gameState)
+            << ", toyIndex=" << prize.toyIndex << std::endl;
 
-void resetAfterReturn()
-{
-    for (auto& s : car.seats) {
-        s.strapped = false;
-        s.sick = false;
+        fallingToyIndex = -1;
+        return;
     }
-    rideState = RideState::Boarding;
-    car.speed = 0.0f;
-    car.param = 0.0f;
-    car.removalMode = true;
-}
 
-Vec2 seatWorldPosition(int idx)
-{
-    Vec2 offset = seatOffsets[idx];
-    float c = std::cos(carAngle);
-    float s = std::sin(carAngle);
-    Vec2 rotated = { offset.x * c - offset.y * s, offset.x * s + offset.y * c };
-    return carPos + rotated;
-}
-
-void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods)
-{
-    if (action != GLFW_PRESS) return;
-    if (key == GLFW_KEY_ESCAPE) glfwSetWindowShouldClose(window, true);
-    if (key == GLFW_KEY_SPACE) addPassenger();
-    if (key == GLFW_KEY_ENTER) tryStartRide();
-    if (key >= GLFW_KEY_1 && key <= GLFW_KEY_8) {
-        int idx = key - GLFW_KEY_1;
-        triggerSick(idx);
+    // Floor hit
+    float minY = floorY + t.size.y * 0.5f;
+    if (t.pos.y <= minY) {
+        t.pos.y = minY;
+        t.velocity = { 0.0f, 0.0f };
+        t.falling = false;
+        fallingToyIndex = -1;
+        gameState = GameState::ActiveNoToy;
     }
 }
 
 void mouseClickCallback(GLFWwindow* window, int button, int action, int mods)
 {
     if (button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS) return;
+    gClickCounter++;
     double mx, my;
     glfwGetCursorPos(window, &mx, &my);
-    float gx, gy;
-    windowToOpenGL(mx, my, gx, gy);
-    for (int i = 0; i < 8; ++i) {
-        Vec2 pos = seatWorldPosition(i);
-        float dist = length({ gx - pos.x, gy - pos.y });
-        if (dist < 0.06f) {
-            if (car.removalMode) removePassenger(i);
-            else toggleSeatStrap(i);
-            break;
+    windowToOpenGL(mx, my, mouseGL.x, mouseGL.y);
+    std::cout << "\n[CLICK #" << gClickCounter << "] mouseGL=(" << mouseGL.x << ", " << mouseGL.y << ")"
+        << " state=" << gameStateName(gameState)
+        << " prize.hasToy=" << (prize.hasToy ? 1 : 0)
+        << " prize.toyIndex=" << prize.toyIndex
+        << std::endl;
+
+    // Prize collection: if clicked slightly early while toy is on the way, remember the intent.
+    if (prize.hasToy && pointInPrizeArea(mouseGL)) {
+        // Always collect immediately when a prize exists; no state gating to avoid timing misses.
+        std::cout << "[CLICK #" << gClickCounter << "] HIT: prize area, prize.hasToy=1 -> collectPrize()" << std::endl;
+        collectPrize();
+        return;
+    }
+
+    if (pointInRect(mouseGL, tokenSlot.pos, tokenSlot.size)) {
+        std::cout << "[CLICK #" << gClickCounter << "] HIT: token slot, state=" << gameStateName(gameState) << std::endl;
+        if (gameState == GameState::Idle) {
+            std::cout << "[CLICK #" << gClickCounter << "] ACTION: startGame()" << std::endl;
+            startGame();
         }
+    }
+}
+
+void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods)
+{
+    if (action == GLFW_PRESS && key == GLFW_KEY_ESCAPE) {
+        glfwSetWindowShouldClose(window, true);
     }
 }
 
 void update(float dt)
 {
-    if (rideState == RideState::Riding) {
-        car.speed = std::min(targetCruiseSpeed, car.speed + baseAcceleration * dt);
-        float slope = carDir.y;
-        car.speed += (-slope) * slopeAcceleration * dt;
-        car.speed = std::clamp(car.speed, 0.05f, 0.8f);
-        car.param += (car.speed / track.totalLength) * dt;
-        if (car.param >= 1.0f) {
-            rideState = RideState::Returning;
-            car.speed = returnSpeed;
+    double mx, my;
+    glfwGetCursorPos(window, &mx, &my);
+    windowToOpenGL(mx, my, mouseGL.x, mouseGL.y);
+
+    updateLamp(dt);
+    updateClawMotion(dt);
+
+    bool sDown = glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS;
+    bool wDown = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS;
+    if (sDown && !sWasDown) {
+        if (gameState == GameState::ActiveNoToy && !claw.movingDown && !claw.movingUp) startLowering();
+        else if (gameState == GameState::ActiveCarrying && !claw.movingDown && !claw.movingUp) releaseToy();
+    }
+    // Manual vertical control when not auto-raising and gameplay is active.
+    bool allowManual = (gameState == GameState::ActiveNoToy || gameState == GameState::ActiveCarrying) && !claw.movingUp && !claw.movingDown;
+    if (allowManual) {
+        if (sDown) {
+            claw.ropeLength = std::min(claw.ropeLength + claw.lowerSpeed * dt, claw.maxLength);
+        }
+        if (wDown) {
+            claw.ropeLength = std::max(claw.ropeLength - claw.raiseSpeed * dt, claw.minLength);
         }
     }
-    else if (rideState == RideState::StoppedForSick) {
-        if (car.speed > 0.01f) {
-            car.param += (car.speed / track.totalLength) * dt;
-            car.param = std::min(1.0f, car.param);
-            car.speed = std::max(0.0f, car.speed - stopDeceleration * dt);
-        }
-        else {
-            sickStopTimer += dt;
-            if (sickStopTimer >= 10.0f) {
-                rideState = RideState::Returning;
-                car.speed = returnSpeed;
-            }
-        }
-    }
-    else if (rideState == RideState::Returning) {
-        car.param -= (returnSpeed / track.totalLength) * dt;
-        car.param = std::max(0.0f, car.param);
-        if (car.param <= 0.0f) {
-            resetAfterReturn();
-        }
+    sWasDown = sDown;
+
+    // Keep grabbed toy attached
+    if (grabbedToyIndex >= 0) {
+        toys[grabbedToyIndex].pos = clawGrabPoint();
     }
 
-    evaluateTrack(car.param, railPos, carDir);
-    carTangent = normalize(carDir);
-    carNormal = { -carTangent.y, carTangent.x };
-    carAngle = std::atan2(carTangent.y, carTangent.x);
-    float cartNormalOffset = 0.0f; // keep cart centered on rail
-    carPos = railPos + carNormal * cartNormalOffset;
+    updateFallingToy(dt);
+
+    // Auto-honor a pending prize click once state is ready.
+    if (pendingPrizeClick && prize.hasToy && gameState == GameState::PrizeWaiting) {
+        collectPrize();
+        pendingPrizeClick = false;
+    }
+
+    // Advance prize pulse timer for visual cue.
+    if (prize.hasToy) prizePulseTime += dt; else prizePulseTime = 0.0f;
 }
 
+// ---------------------- Rendering ---------------------- //
 void drawQuadColor(const Vec2& pos, const Vec2& size, float rot, const std::array<float, 4>& color)
 {
     glUseProgram(colorShader);
@@ -678,187 +888,162 @@ void drawQuadTexture(unsigned int tex, const Vec2& pos, const Vec2& size, float 
     glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 }
 
-void renderTrackSilhouette()
+void renderBackground()
 {
-    const std::array<float, 4> railColor = { 0.0f, 0.0f, 0.0f, 1.0f };
-    const std::array<float, 4> innerShade = { 0.03f, 0.03f, 0.03f, 1.0f };
-    const std::array<float, 4> tieColor = { 0.97f, 0.85f, 0.58f, 1.0f };
-    const float trackWidth = 0.072f;
-    const float groundY = -0.80f;
-
-    // Supports
-    for (float d = 0.0f; d <= track.totalLength; d += 0.12f) {
-        float t = d / track.totalLength;
-        Vec2 pos, tan;
-        evaluateTrack(t, pos, tan);
-        float topY = pos.y - trackWidth * 0.55f;
-        float height = topY - groundY;
-        if (height < 0.02f) continue;
-        Vec2 center = { pos.x, groundY + height * 0.5f };
-        drawQuadColor(center, { 0.014f, height }, 0.0f, railColor);
-    }
-
-    auto drawBrace = [&](const Vec2& a, const Vec2& b) {
-        Vec2 mid = (a + b) * 0.5f;
-        float len = length(b - a);
-        float ang = std::atan2(b.y - a.y, b.x - a.x);
-        drawQuadColor(mid, { len, 0.016f }, ang, railColor);
-    };
-    drawBrace({ -0.66f, groundY }, { -0.44f, -0.18f });
-    drawBrace({ -0.18f, groundY }, { -0.05f, -0.18f });
-    drawBrace({ 0.18f, groundY }, { 0.34f, -0.08f });
-    drawBrace({ 0.54f, groundY }, { 0.70f, -0.16f });
-
-    // Base rail ribbon
-    for (size_t i = 0; i + 1 < track.samples.size(); ++i) {
-        Vec2 p0 = track.samples[i];
-        Vec2 p1 = track.samples[i + 1];
-        float segLen = length(p1 - p0);
-        if (segLen < 1e-5f) continue;
-        Vec2 mid = (p0 + p1) * 0.5f;
-        float ang = std::atan2(p1.y - p0.y, p1.x - p0.x);
-        drawQuadColor(mid, { segLen, trackWidth }, ang, railColor);
-        drawQuadColor(mid, { segLen, trackWidth * 0.55f }, ang, innerShade);
-    }
-
-    // Track ties (segment markers)
-    float tieSpacing = 0.060f;
-    if (track.totalLength > 0.0f) {
-        for (float d = 0.0f; d <= track.totalLength; d += tieSpacing) {
-            float t = d / track.totalLength;
-            Vec2 pos, tan;
-            evaluateTrack(t, pos, tan);
-            float ang = std::atan2(tan.y, tan.x);
-            drawQuadColor(pos, { 0.016f, trackWidth * 0.52f }, ang, tieColor);
-            drawQuadColor(pos, { 0.020f, trackWidth * 0.22f }, ang, railColor);
-        }
-    }
-
+    drawQuadColor({ 0.0f, 0.0f }, { 2.4f, 2.4f }, 0.0f, { 0.05f, 0.06f, 0.08f, 1.0f });
 }
 
-void renderCar()
+void renderCabinet()
 {
-    float angle = carAngle;
-    Vec2 cartSize = { 0.35f, 0.24f };
-    drawQuadColor(carPos, cartSize, angle, { 0.80f, 0.12f, 0.15f, 0.96f });
+    std::array<float, 4> cyan = { 0.15f, 0.68f, 0.74f, 1.0f };
+    std::array<float, 4> darkBlue = { 0.10f, 0.24f, 0.34f, 1.0f };
+    std::array<float, 4> brown = { 0.38f, 0.27f, 0.17f, 1.0f };
 
-    for (int i = 0; i < 8; ++i) {
-        Vec2 sPos = seatWorldPosition(i);
-        drawQuadTexture(seatTex, sPos, { 0.08f, 0.08f }, angle, { 1.0f, 1.0f, 1.0f, 0.9f });
-        if (car.seats[i].occupied) {
-            std::array<float, 4> tint = car.seats[i].sick ? std::array<float, 4>{ 0.5f, 1.0f, 0.5f, 1.0f } : std::array<float, 4>{ 1.0f, 1.0f, 1.0f, 1.0f };
-            drawQuadTexture(passengerTex, sPos, { 0.07f, 0.07f }, angle, tint);
-        }
-        if (car.seats[i].strapped && car.seats[i].occupied) {
-            drawQuadTexture(beltTex, sPos, { 0.09f, 0.09f }, angle, { 1.0f, 1.0f, 1.0f, 0.85f });
-        }
+    Vec2 cabinetCenter = { 0.0f, boxCenter.y - 0.03f };
+    Vec2 cabinetSize = { boxSize.x + 0.24f, boxSize.y + 0.36f };
+    drawQuadColor(cabinetCenter, cabinetSize, 0.0f, cyan);
+
+    // Side trims
+    float trimWidth = 0.08f;
+    drawQuadColor({ boxLeft - trimWidth * 0.5f, boxCenter.y }, { trimWidth, boxSize.y + 0.32f }, 0.0f, brown);
+    drawQuadColor({ boxRight + trimWidth * 0.5f, boxCenter.y }, { trimWidth, boxSize.y + 0.32f }, 0.0f, brown);
+
+    // Top cover
+    drawQuadColor({ cabinetCenter.x, boxTop + 0.16f }, { cabinetSize.x, 0.18f }, 0.0f, darkBlue);
+    drawQuadColor({ cabinetCenter.x, boxTop + 0.24f }, { cabinetSize.x, 0.04f }, 0.0f, brown);
+
+    // Bottom control area
+    drawQuadColor({ cabinetCenter.x, boxBottom - 0.18f }, { cabinetSize.x, 0.26f }, 0.0f, darkBlue);
+    drawQuadColor({ cabinetCenter.x, boxBottom - 0.28f }, { cabinetSize.x, 0.06f }, 0.0f, brown);
+}
+
+void renderGlassBox()
+{
+    // Glass tint
+    drawQuadColor(boxCenter, boxSize, 0.0f, { 0.75f, 0.95f, 0.98f, 0.20f });
+    // Inner overlay to darken a bit
+    drawQuadColor(boxCenter, boxSize, 0.0f, { 0.08f, 0.10f, 0.12f, 0.18f });
+
+    // Top band inside glass
+    drawQuadColor({ boxCenter.x, boxTop - 0.04f }, { boxSize.x, 0.04f }, 0.0f, { 0.12f,0.20f,0.28f,0.45f });
+    // Floor strip
+    drawQuadColor({ boxCenter.x, floorY - 0.01f }, { boxSize.x, 0.04f }, 0.0f, { 0.06f,0.08f,0.10f,0.35f });
+}
+
+void renderHole()
+{
+    drawQuadTexture(holeTexture, hole.center, { hole.radius * 2.0f, hole.radius * 2.0f }, 0.0f, { 0.9f,0.9f,0.95f,0.85f });
+}
+
+void renderPrizeCompartment()
+{
+    drawQuadColor(prize.pos, prize.size, 0.0f, { 0.12f,0.20f,0.28f,1.0f });
+    drawQuadColor(prize.pos + Vec2{ 0.0f, prize.size.y * 0.20f }, { prize.size.x * 1.05f, 0.02f }, 0.0f, { 0.40f,0.50f,0.55f,1.0f });
+    if (prize.hasToy) {
+        float pulse = 0.45f + 0.35f * std::sin(prizePulseTime * 6.0f);
+        std::array<float, 4> glow = { 0.95f, 0.95f, 0.35f, pulse };
+        drawQuadColor(prize.pos, prize.size * 1.15f, 0.0f, glow);
+    }
+    if (prize.hasToy && prize.toyIndex >= 0) {
+        drawQuadTexture(toys[prize.toyIndex].texture, prize.pos, toys[prize.toyIndex].size * 1.1f, 0.0f, { 1.0f,1.0f,1.0f,1.0f });
+    }
+}
+
+void renderTokenSlot()
+{
+    drawQuadColor(tokenSlot.pos, tokenSlot.size, 0.0f, { 0.38f,0.27f,0.17f,1.0f });
+    drawQuadColor(tokenSlot.pos + Vec2{ 0.0f, 0.01f }, { tokenSlot.size.x * 0.75f, 0.012f }, 0.0f, { 0.96f,0.80f,0.32f,1.0f });
+}
+
+void renderLamp()
+{
+    std::array<float, 4> off = { 0.15f,0.15f,0.15f,1.0f };
+    std::array<float, 4> blue = { 0.2f,0.5f,1.0f,1.0f };
+    std::array<float, 4> green = { 0.1f,0.9f,0.3f,1.0f };
+    std::array<float, 4> red = { 0.95f,0.1f,0.1f,1.0f };
+    std::array<float, 4> color = off;
+    if (lamp.mode == LampMode::Blue) color = blue;
+    else if (lamp.mode == LampMode::Blink) color = lamp.blinkToggle ? green : red;
+
+    Vec2 lampPos = { boxCenter.x, boxTop + 0.18f };
+    drawQuadColor(lampPos, { 0.16f, 0.10f }, 0.0f, { 0.08f,0.08f,0.10f,1.0f });
+    drawQuadColor(lampPos, { 0.12f, 0.08f }, 0.0f, color);
+}
+
+void renderRopeAndClaw()
+{
+    Vec2 cPos = clawPosition();
+    Vec2 ropeCenter = { claw.anchor.x, (claw.anchor.y + cPos.y) * 0.5f };
+    float ropeLen = claw.anchor.y - cPos.y;
+    std::array<float, 4> rail = { 0.18f,0.45f,0.75f,1.0f };
+    std::array<float, 4> joint = { 0.10f,0.24f,0.34f,1.0f };
+    float railY = boxTop - 0.04f;
+    drawQuadColor({ (boxLeft + boxRight) * 0.5f, railY }, { boxSize.x, 0.03f }, 0.0f, rail);
+    drawQuadColor({ claw.anchor.x, railY - 0.04f }, { 0.08f, 0.08f }, 0.0f, joint);
+
+    drawQuadColor(ropeCenter, { 0.012f, ropeLen }, 0.0f, { 0.85f,0.85f,0.90f,1.0f });
+
+    std::array<float, 4> clawColor = claw.open ? std::array<float, 4>{ 0.90f,0.92f,0.96f,1.0f } : std::array<float, 4>{ 0.64f,0.66f,0.72f,1.0f };
+    std::array<float, 4> clawShadow = { 0.08f,0.10f,0.12f,0.35f };
+    drawQuadColor(cPos + Vec2{ 0.01f, -0.01f }, { claw.width, claw.height }, 0.0f, clawShadow);
+    drawQuadColor(cPos, { claw.width, claw.height }, 0.0f, clawColor);
+    // Small jaws
+    float jawOffset = claw.width * 0.25f;
+    float jawWidth = claw.width * 0.18f;
+    float jawHeight = claw.height * 0.6f;
+    if (claw.open) {
+        drawQuadColor(cPos + Vec2{ -jawOffset, -jawHeight * 0.25f }, { jawWidth, jawHeight }, 0.35f, clawColor);
+        drawQuadColor(cPos + Vec2{ jawOffset, -jawHeight * 0.25f }, { jawWidth, jawHeight }, -0.35f, clawColor);
+    }
+    else {
+        drawQuadColor(cPos + Vec2{ -jawOffset * 0.6f, -jawHeight * 0.2f }, { jawWidth, jawHeight }, 0.05f, clawColor);
+        drawQuadColor(cPos + Vec2{ jawOffset * 0.6f, -jawHeight * 0.2f }, { jawWidth, jawHeight }, -0.05f, clawColor);
+    }
+}
+
+void renderToys()
+{
+    for (const auto& t : toys) {
+        if (!t.active || t.inPrize) continue;
+        drawQuadTexture(t.texture, t.pos, t.size, 0.0f, { 1.0f,1.0f,1.0f,1.0f });
     }
 }
 
 void renderLabel()
 {
-    drawQuadTexture(labelTex, { 0.0f, 0.83f }, { 1.6f, 0.30f }, 0.0f, { 1.0f,1.0f,1.0f,1.0f });
+    drawQuadTexture(labelTex, { 0.0f, 0.82f }, { 1.6f, 0.28f }, 0.0f, { 1.0f,1.0f,1.0f,1.0f });
 }
 
-void renderSkyGradient()
+void renderCursor()
 {
-    drawQuadColor({ 0.0f, 0.80f }, { 2.4f, 0.9f }, 0.0f, { 0.97f, 0.63f, 0.24f, 1.0f });
-    drawQuadColor({ 0.0f, 0.30f }, { 2.4f, 0.9f }, 0.0f, { 0.99f, 0.74f, 0.32f, 1.0f });
-    drawQuadColor({ 0.0f, -0.10f }, { 2.4f, 0.9f }, 0.0f, { 1.00f, 0.86f, 0.54f, 1.0f });
-}
-
-void drawBench(const Vec2& pos, float scale)
-{
-    std::array<float, 4> c = { 0.0f, 0.0f, 0.0f, 1.0f };
-    drawQuadColor(pos + Vec2{ 0.0f, -0.01f * scale }, { 0.14f * scale, 0.02f * scale }, 0.0f, c); // seat
-    drawQuadColor(pos + Vec2{ -0.05f * scale, -0.05f * scale }, { 0.012f * scale, 0.08f * scale }, 0.0f, c); // left leg
-    drawQuadColor(pos + Vec2{ 0.05f * scale, -0.05f * scale }, { 0.012f * scale, 0.08f * scale }, 0.0f, c); // right leg
-    drawQuadColor(pos + Vec2{ 0.0f, 0.04f * scale }, { 0.14f * scale, 0.02f * scale }, 0.0f, c); // backrest
-}
-
-void drawTree(const Vec2& pos, float scale)
-{
-    std::array<float, 4> black = { 0.0f, 0.0f, 0.0f, 1.0f };
-    drawQuadColor(pos + Vec2{ 0.0f, -0.06f * scale }, { 0.022f * scale, 0.12f * scale }, 0.0f, black); // trunk
-    drawQuadColor(pos + Vec2{ 0.0f, 0.04f * scale }, { 0.14f * scale, 0.12f * scale }, 0.75f, black);
-    drawQuadColor(pos + Vec2{ 0.0f, 0.09f * scale }, { 0.12f * scale, 0.10f * scale }, -0.75f, black);
-}
-
-void renderSkyline()
-{
-    const std::array<float, 4> shade = { 0.06f, 0.06f, 0.08f, 1.0f };
-    float baseY = -0.58f;
-    struct Building { float x; float width; float height; float extra; };
-    std::array<Building, 18> buildings = { {
-        { -0.95f, 0.10f, 0.32f, 0.02f },
-        { -0.82f, 0.08f, 0.26f, 0.00f },
-        { -0.72f, 0.12f, 0.30f, 0.06f },
-        { -0.60f, 0.06f, 0.18f, 0.04f },
-        { -0.52f, 0.08f, 0.24f, 0.05f },
-        { -0.42f, 0.10f, 0.28f, 0.00f },
-        { -0.30f, 0.07f, 0.22f, 0.08f },
-        { -0.20f, 0.12f, 0.34f, 0.04f },
-        { -0.08f, 0.10f, 0.20f, 0.10f },
-        { 0.05f, 0.08f, 0.25f, 0.05f },
-        { 0.16f, 0.12f, 0.36f, 0.02f },
-        { 0.30f, 0.10f, 0.30f, 0.06f },
-        { 0.44f, 0.08f, 0.22f, 0.04f },
-        { 0.56f, 0.14f, 0.34f, 0.04f },
-        { 0.72f, 0.12f, 0.30f, 0.08f },
-        { 0.86f, 0.08f, 0.22f, 0.02f },
-        { 0.98f, 0.08f, 0.26f, 0.00f },
-        { -0.02f, 0.06f, 0.18f, 0.12f }
-    } };
-    for (const auto& b : buildings) {
-        Vec2 center = { b.x, baseY + b.height * 0.5f };
-        drawQuadColor(center, { b.width, b.height + b.extra }, 0.0f, shade);
+    unsigned int tex = (gameState == GameState::Idle) ? cursorTokenTex : cursorLeverTex;
+    Vec2 size = (gameState == GameState::Idle) ? Vec2{ 0.08f, 0.08f } : Vec2{ 0.10f, 0.10f };
+    Vec2 pos = mouseGL;
+    if (tex == cursorLeverTex) {
+        pos = mouseGL + Vec2{ size.x * 0.5f, size.y * 0.5f };
     }
-
-    // A few antennas and spires to break up the roofline.
-    std::array<Vec2, 5> spires = { Vec2{ -0.70f, -0.22f }, Vec2{ -0.35f, -0.16f }, Vec2{ 0.16f, -0.20f }, Vec2{ 0.44f, -0.18f }, Vec2{ 0.70f, -0.20f } };
-    for (const auto& s : spires) {
-        drawQuadColor(s, { 0.006f, 0.24f }, 0.0f, shade);
-    }
-}
-
-void renderGroundSilhouette()
-{
-    std::array<float, 4> black = { 0.0f, 0.0f, 0.0f, 1.0f };
-    drawQuadColor({ 0.0f, -0.80f }, { 2.4f, 0.38f }, 0.0f, black);
-    drawQuadColor({ 0.0f, -0.60f }, { 2.4f, 0.04f }, 0.0f, black);
-
-    drawBench({ -0.52f, -0.68f }, 1.0f);
-    drawBench({ 0.40f, -0.70f }, 1.0f);
-
-    drawTree({ -0.78f, -0.62f }, 1.0f);
-    drawTree({ 0.82f, -0.62f }, 0.85f);
-}
-
-void renderClouds()
-{
-    drawQuadTexture(cloudTex, { -0.60f, 0.72f }, { 0.30f, 0.12f }, 0.0f, { 1.0f, 1.0f, 1.0f, 0.92f });
-    drawQuadTexture(cloudTex, { 0.28f, 0.76f }, { 0.26f, 0.11f }, 0.0f, { 1.0f, 1.0f, 1.0f, 0.88f });
-}
-
-void renderEnvironment()
-{
-    renderSkyGradient();
-    renderSkyline();
-    renderClouds();
-    renderGroundSilhouette();
+    drawQuadTexture(tex, pos, size, 0.0f, { 1.0f,1.0f,1.0f,1.0f });
 }
 
 void render()
 {
-    glClearColor(0.05f, 0.05f, 0.07f, 1.0f);
+    glClearColor(0.05f, 0.06f, 0.08f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    renderEnvironment();
-    renderTrackSilhouette();
-    renderCar();
+    renderBackground();
+    renderCabinet();
+    renderGlassBox();
+    renderPrizeCompartment();
+    renderTokenSlot();
+    renderHole();
+    renderToys();
+    renderRopeAndClaw();
+    renderLamp();
     renderLabel();
+    renderCursor();
 }
 
+// ---------------------- Main loop ---------------------- //
 void mainLoop()
 {
     const double targetFrame = 1.0 / 75.0;
@@ -891,36 +1076,30 @@ int main()
     glfwSetMouseButtonCallback(window, mouseClickCallback);
     glfwSetKeyCallback(window, keyCallback);
 
-    track = buildTrack();
     createVAOs();
-    createTrackGeometry();
 
     colorShader = createShader("Source/Shaders/color.vert", "Source/Shaders/color.frag");
     textureShader = createShader("Source/Shaders/texture.vert", "Source/Shaders/texture.frag");
 
-    passengerTex = createTextureFromRGBA(makeCircleTexture(64, { 230, 200, 120, 255 }), 64, 64);
-    beltTex = createTextureFromRGBA(makeSeatbeltTexture(64), 64, 64);
-    seatTex = createTextureFromRGBA(makeSeatTexture(64), 64, 64);
+    toyTextureA = createTextureFromRGBA(makeToyTextureDots(64), 64, 64);
+    toyTextureB = createTextureFromRGBA(makeToyTextureStripes(64), 64, 64);
+    toyTextureC = createTextureFromRGBA(makeToyTextureChecks(64), 64, 64);
+    holeTexture = createTextureFromRGBA(makeRingTexture(96, { 20,25,32,210 }, { 80,90,110,190 }), 96, 96);
+    cursorTokenTex = createTextureFromRGBA(makeCoinTexture(64), 64, 64);
+    cursorLeverTex = createTextureFromRGBA(makeLeverTexture(64), 64, 64);
     labelTex = createTextureFromRGBA(
-        makeLabelTexture(1024, 240,
+        makeLabelTexture(1024, 220,
             "BORIS LAHOS RA 168/2022\n\n"
-            "SPACE  - ADD PASSENGER TO CAR\n"
-            "CLICK  - TOGGLE BELT / REMOVE WHEN RETURNED\n"
-            "ENTER  - START RIDE\n"
-            "1-8    - MAKE PASSENGER SICK DURING RIDE\n"
-            "ESC    - EXIT PROGRAM"),
-        1024, 240);
-    sunTex = createTextureFromRGBA(makeCircleTexture(128, { 250, 210, 80, 255 }), 128, 128);
-    cloudTex = createTextureFromRGBA(makeCircleTexture(128, { 230, 230, 240, 220 }), 128, 128);
+            "LEFT CLICK TOKEN SLOT  - START GAME\n"
+            "A / D                  - MOVE CLAW\n"
+            "W                      - RAISE CLAW (manual up)\n"
+            "S                      - LOWER / DROP\n"
+            "LEFT CLICK PRIZE       - COLLECT TOY\n"
+            "ESC                    - EXIT"),
+        1024, 220);
 
-    auto railPixels = makeRailCursorPixels(32);
-    GLFWimage img;
-    img.width = 32;
-    img.height = 32;
-    img.pixels = railPixels.data();
-    railCursor = glfwCreateCursor(&img, 4, 4);
-    if (railCursor) glfwSetCursor(window, railCursor);
-
+    spawnToys();
+    resetMachine();
     initOpenGLState();
     mainLoop();
 
