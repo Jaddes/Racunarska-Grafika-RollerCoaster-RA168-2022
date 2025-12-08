@@ -65,7 +65,7 @@ struct Claw {
     float maxLength = 1.18f;
     float moveSpeed = 0.65f;
     float lowerSpeed = 0.80f;
-    float raiseSpeed = 1.00f;
+    float raiseSpeed = 0.80f;
     float width = 0.12f;
     float height = 0.10f;
     bool open = false;
@@ -82,6 +82,7 @@ struct Toy {
     bool grabbed = false;
     bool falling = false;
     bool inPrize = false;
+    bool inHole = false;
 };
 
 struct Hole {
@@ -575,6 +576,7 @@ void spawnToys()
         toys[i].falling = false;
         toys[i].inPrize = false;
         toys[i].active = true;
+        toys[i].inHole = false;
         toys[i].texture = toyTextures[i % toyTextures.size()];
     }
     nextSpawnSlot = (startSlot + static_cast<int>(toys.size())) % spawnPositions.size();
@@ -612,6 +614,7 @@ void releaseToy()
     Toy& t = toys[grabbedToyIndex];
     t.grabbed = false;
     t.falling = true;
+    t.inHole = false;
     t.velocity = { 0.0f, 0.0f };
     t.pos = clawGrabPoint();
     fallingToyIndex = grabbedToyIndex;
@@ -631,6 +634,8 @@ void collectPrize()
     toys[idx].inPrize = false;
     toys[idx].falling = false;
     toys[idx].grabbed = false;
+    toys[idx].inHole = false;
+    toys[idx].velocity = { 0.0f, 0.0f };
     toys[idx].active = true;
     // Respawn toy to keep the machine playable.
     Vec2 respawn = spawnPositions[nextSpawnSlot];
@@ -748,25 +753,37 @@ void updateFallingToy(float dt)
     t.velocity.y += gravity * dt;
     t.pos.y += t.velocity.y * dt;
 
-    // Hole detection
-    float holeDist = length({ t.pos.x - hole.center.x, t.pos.y - hole.center.y });
-    if (holeDist < hole.radius * 0.75f && t.pos.y <= hole.center.y + 0.02f) {
-        t.falling = false;
-        t.inPrize = true;
-        prize.hasToy = true;
-        prize.toyIndex = fallingToyIndex;
-        t.pos = prize.pos;
-        lamp.mode = LampMode::Blink;
-        lamp.timer = 0.0f;
-        gameState = GameState::PrizeWaiting;
-        claw.open = false;
-        claw.movingDown = false;
-        claw.movingUp = true;
+    bool handleHolePath = false;
+    if (t.inHole) {
+        handleHolePath = true;
+    }
+    else {
+        float holeDist = length({ t.pos.x - hole.center.x, t.pos.y - hole.center.y });
+        if (holeDist < hole.radius * 0.75f && t.pos.y <= hole.center.y + 0.02f) {
+            t.inHole = true;
+            t.pos.x = hole.center.x;
+            handleHolePath = true;
+        }
+    }
 
-        std::cout << "[HOLE] Toy entered hole -> prize.hasToy=1, state=" << gameStateName(gameState)
-            << ", toyIndex=" << prize.toyIndex << std::endl;
-
-        fallingToyIndex = -1;
+    if (handleHolePath) {
+        float prizeBottom = prize.pos.y - prize.size.y * 0.5f + t.size.y * 0.5f;
+        if (t.pos.y <= prizeBottom) {
+            t.pos.y = prizeBottom;
+            t.velocity = { 0.0f, 0.0f };
+            t.falling = false;
+            t.inPrize = true;
+            t.inHole = false;
+            prize.hasToy = true;
+            prize.toyIndex = fallingToyIndex;
+            lamp.mode = LampMode::Blink;
+            lamp.timer = 0.0f;
+            gameState = GameState::PrizeWaiting;
+            claw.open = false;
+            claw.movingDown = false;
+            claw.movingUp = true;
+            fallingToyIndex = -1;
+        }
         return;
     }
 
@@ -776,6 +793,7 @@ void updateFallingToy(float dt)
         t.pos.y = minY;
         t.velocity = { 0.0f, 0.0f };
         t.falling = false;
+        t.inHole = false;
         fallingToyIndex = -1;
         gameState = GameState::ActiveNoToy;
     }
@@ -831,7 +849,7 @@ void update(float dt)
     bool wDown = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS;
     if (sDown && !sWasDown) {
         if (gameState == GameState::ActiveNoToy && !claw.movingDown && !claw.movingUp) startLowering();
-        else if (gameState == GameState::ActiveCarrying && !claw.movingDown && !claw.movingUp) releaseToy();
+        else if (gameState == GameState::ActiveCarrying) releaseToy();
     }
     // Manual vertical control when not auto-raising and gameplay is active.
     bool allowManual = (gameState == GameState::ActiveNoToy || gameState == GameState::ActiveCarrying) && !claw.movingUp && !claw.movingDown;
@@ -1092,7 +1110,6 @@ int main()
             "BORIS LAHOS RA 168/2022\n\n"
             "LEFT CLICK TOKEN SLOT  - START GAME\n"
             "A / D                  - MOVE CLAW\n"
-            "W                      - RAISE CLAW (manual up)\n"
             "S                      - LOWER / DROP\n"
             "LEFT CLICK PRIZE       - COLLECT TOY\n"
             "ESC                    - EXIT"),
